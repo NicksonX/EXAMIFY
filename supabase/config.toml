@@ -1,0 +1,61 @@
+# Examify Supabase local configuration. Apply database migrations with
+# `supabase db push`, or run complete migration files in the dashboard SQL editor.
+
+project_id = "examify"
+
+[auth]
+# Configure these values in Supabase Dashboard > Authentication > URL Configuration:
+#   Site URL:     http://localhost:5173
+#   Redirect URL: http://localhost:5173/auth/callback
+# Add the deployed origin and its /auth/callback URL when production is ready.
+#
+# Configure Google and Apple in Supabase Dashboard > Authentication > Providers.
+# Both upstream providers must use this Supabase callback, not the browser callback:
+#   https://<project-ref>.supabase.co/auth/v1/callback
+#
+# Keep Google client secrets, Apple .p8 keys, Apple client-secret JWTs, service-role
+# keys, and database credentials out of this file and out of VITE_* variables.
+
+# Paystack signs webhooks rather than supplying a Supabase JWT. The function
+# validates the raw-body HMAC SHA-512 signature before parsing the payload.
+[functions.paystack-webhook]
+verify_jwt = false
+
+# Wallet funding has its own endpoint and idempotent settlement pipeline. It
+# validates Paystack's raw-body signature itself, so it cannot use a JWT.
+[functions.wallet-paystack-webhook]
+verify_jwt = false
+
+# This scheduled, server-only worker authenticates its own opaque scheduler
+# secret. Do not expose its URL or WALLET_RECONCILIATION_SECRET to browsers.
+[functions.reconcile-wallet-topups]
+verify_jwt = false
+
+# Paystack remains configured to send webhooks to paystack-webhook. This isolated
+# transfer handler verifies the forwarded raw Paystack signature again.
+[functions.paystack-payout-webhook]
+verify_jwt = false
+
+# These private workers authenticate independent opaque scheduler secrets. Their
+# URLs and PAYSTACK_PAYOUT_*_SECRET values must never reach browser code.
+[functions.dispatch-approved-paystack-payouts]
+verify_jwt = false
+
+[functions.reconcile-paystack-payouts]
+verify_jwt = false
+
+[functions.reconcile-paystack-payout-destinations]
+verify_jwt = false
+
+# Learners submit encrypted bank details for manual finance review. This endpoint
+# validates a Supabase JWT and never performs account-name resolution.
+[functions.request-manual-payout]
+verify_jwt = true
+
+# Private, opt-in workers for approved manual withdrawal requests. Their scheduler
+# secrets and release acknowledgement must remain server-only.
+[functions.dispatch-approved-manual-payouts]
+verify_jwt = false
+
+[functions.reconcile-manual-payouts]
+verify_jwt = false

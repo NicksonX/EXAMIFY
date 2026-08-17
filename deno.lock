@@ -1,0 +1,41 @@
+{
+  "version": "5",
+  "redirects": {
+    "https://esm.sh/@supabase/supabase-js@2": "https://esm.sh/@supabase/supabase-js@2.112.0"
+  },
+  "remote": {
+    "https://esm.sh/@supabase/supabase-js@2.112.0": "f420344a1c52d354b8af85dfdcfa10d2178c0840526dbc39768a24de3b956a95"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@eslint/js@^10.0.1",
+        "npm:@supabase/supabase-js@^2.45.0",
+        "npm:@testing-library/jest-dom@^6.9.1",
+        "npm:@testing-library/react@^16.3.2",
+        "npm:@testing-library/user-event@^14.6.3",
+        "npm:@types/react-dom@^18.3.0",
+        "npm:@types/react@^18.3.3",
+        "npm:@vitejs/plugin-react@^4.3.1",
+        "npm:autoprefixer@^10.4.19",
+        "npm:eslint-plugin-react-hooks@^7.1.1",
+        "npm:eslint-plugin-react-refresh@~0.5.3",
+        "npm:eslint@^10.7.0",
+        "npm:framer-motion@^11.3.19",
+        "npm:globals@^17.7.0",
+        "npm:jsdom@^25.0.1",
+        "npm:lucide-react@0.383",
+        "npm:postcss@^8.4.40",
+        "npm:react-dom@^18.3.1",
+        "npm:react-hot-toast@^2.4.1",
+        "npm:react-router-dom@^6.30.4",
+        "npm:react@^18.3.1",
+        "npm:tailwindcss@^3.4.7",
+        "npm:typescript-eslint@^8.65.0",
+        "npm:typescript@^5.5.4",
+        "npm:vite@^5.3.5",
+        "npm:vitest@^2.1.9"
+      ]
+    }
+  }
+}

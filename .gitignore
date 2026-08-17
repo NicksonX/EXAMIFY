@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.env
+.env.*
+!.env.example
+.supabase/
+.DS_Store
+*.log
+
+# Do not publish local configuration, local Supabase state, assistant state, or SQL files.
+.env.example
+*.sql
+supabase/_content_drafts/
+supabase/.temp/
+supabase/.branches/
+.claude/
+*.tsbuildinfo
