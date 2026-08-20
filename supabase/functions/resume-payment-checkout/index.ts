@@ -1,5 +1,6 @@
 import {
   corsHeaders,
+  ensureTrialCheckoutAvailable,
   errorResponse,
   HttpError,
   optionsResponse,
@@ -24,6 +25,7 @@ Deno.serve(async (request) => {
 
     const user = await requireUser(request);
     const admin = serviceClient();
+    await ensureTrialCheckoutAvailable(admin, user.id);
     const { data, error } = await admin.rpc("get_open_payment_checkout_for_user", {
       p_user_id: user.id,
     });

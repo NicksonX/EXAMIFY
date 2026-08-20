@@ -16,7 +16,7 @@ function planRank(plan: PlanSlug): number {
 }
 
 Deno.serve(async (request) => {
-  let headers: HeadersInit;
+  let headers: HeadersInit = {};
   try {
     headers = corsHeaders(request);
     if (request.method === "OPTIONS") return optionsResponse(request);
@@ -34,19 +34,14 @@ Deno.serve(async (request) => {
     if (error) throw error;
     if (!data) throw new HttpError(404, "MATERIAL_NOT_FOUND", "That study material was not found.");
 
-    const now = new Date().toISOString();
-    const { data: entitlements, error: entitlementError } = await admin
-      .from("entitlements")
-      .select("plan_slug")
-      .eq("user_id", user.id)
-      .eq("status", "active")
-      .lte("starts_at", now)
-      .gt("ends_at", now);
+    const { data: entitlement, error: entitlementError } = await admin.rpc("get_entitlement_for_user", {
+      p_user_id: user.id,
+    });
     if (entitlementError) throw entitlementError;
-    const activePlan = (entitlements ?? []).reduce<PlanSlug>((best, entitlement) => {
-      const plan = entitlement.plan_slug === "pro" || entitlement.plan_slug === "plus" ? entitlement.plan_slug : "free";
-      return planRank(plan) > planRank(best) ? plan : best;
-    }, "free");
+    const activePlan: PlanSlug = entitlement && typeof entitlement === "object" && !Array.isArray(entitlement)
+      && ((entitlement as Record<string, unknown>).plan === "plus" || (entitlement as Record<string, unknown>).plan === "pro")
+      ? (entitlement as Record<string, unknown>).plan as Exclude<PlanSlug, "free">
+      : "free";
     const requirement = data.minimum_plan_slug as PlanSlug;
     const granted = planRank(activePlan) >= planRank(requirement);
     const preview = {

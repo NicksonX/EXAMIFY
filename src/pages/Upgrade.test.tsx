@@ -43,7 +43,7 @@ const plans = [
 ] as const;
 
 function renderUpgrade() {
-  return render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Upgrade /></MemoryRouter>);
+  return render(<MemoryRouter><Upgrade /></MemoryRouter>);
 }
 
 describe("Upgrade", () => {
@@ -56,6 +56,25 @@ describe("Upgrade", () => {
     mocks.getMyOpenPaymentCheckout.mockReset().mockResolvedValue(null);
     mocks.createCheckout.mockReset();
     mocks.resumePaymentCheckout.mockReset();
+  });
+
+  it("disables paid actions during the server-owned learning trial", async () => {
+    mocks.getMyEntitlement.mockResolvedValue({
+      plan: "pro", status: "trial", endsAt: "2026-09-02T12:00:00.000Z",
+      trial: true, trialEndsAt: "2026-09-02T12:00:00.000Z",
+      checkoutLockedUntil: "2026-09-02T12:00:00.000Z",
+      completedExams: 0, remainingExams: null, canTakeExam: true,
+      canDownloadResults: true, canReadPlus: true, canReadPro: true,
+    });
+    const user = userEvent.setup();
+    renderUpgrade();
+
+    const button = await screen.findByRole("button", { name: "Available after trial" });
+    expect(button).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Paid plans are unavailable during your learning trial");
+    expect(screen.getByRole("status")).toHaveTextContent("2 September 2026");
+    await user.click(button);
+    expect(mocks.createCheckout).not.toHaveBeenCalled();
   });
 
   it("keeps purchase actions available after a terminal Paystack initialization rejection", async () => {
@@ -73,6 +92,24 @@ describe("Upgrade", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Support ID: 4d893f90-f03d-4f48-8c9b-7466b8c3839a");
     expect(screen.getByRole("button", { name: "Choose Plus Monthly" })).toBeEnabled();
     expect(screen.queryByText(/checkout is still open/i)).not.toBeInTheDocument();
+  });
+
+  it("does not resume an initialized checkout during the learning trial", async () => {
+    mocks.getMyEntitlement.mockResolvedValue({
+      plan: "pro", status: "trial", endsAt: "2026-09-02T12:00:00.000Z",
+      trial: true, trialEndsAt: "2026-09-02T12:00:00.000Z",
+      checkoutLockedUntil: "2026-09-02T12:00:00.000Z",
+      completedExams: 0, remainingExams: null, canTakeExam: true,
+      canDownloadResults: true, canReadPlus: true, canReadPro: true,
+    });
+    mocks.getMyOpenPaymentCheckout.mockResolvedValue({
+      product: "pro_yearly", tier: "pro", reference: "exf_1234567890abcdef", status: "initialized", expiresAt: "2026-08-12T12:30:00.000Z",
+    });
+    renderUpgrade();
+
+    expect(await screen.findByText(/A Pro Yearly checkout is still open/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume checkout" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Check payment status" })).toBeInTheDocument();
   });
 
   it("shows resume only for an initialized checkout", async () => {

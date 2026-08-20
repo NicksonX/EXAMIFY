@@ -40,6 +40,7 @@ export function SubjectBrowser({ actions, heading, variant = "workspace" }: Subj
   const [courses, setCourses] = useState<Subject[]>([]);
 
   const [institutionId, setInstitutionId] = useState("");
+  const [institutionSearch, setInstitutionSearch] = useState("");
   const [facultyId, setFacultyId] = useState("");
   const [departmentId, setDepartmentId] = useState("");
 
@@ -47,35 +48,47 @@ export function SubjectBrowser({ actions, heading, variant = "workspace" }: Subj
   const [loadingDept, setLoadingDept] = useState(false);
   const [loadingCourses, setLoadingCourses] = useState(false);
   const [univError, setUnivError] = useState(false);
+  const selectedInstitution = institutions.find((institution) => institution.id === institutionId) ?? null;
+  const cataloguePublished = selectedInstitution?.catalogue_status === "catalogue_published";
+  const directoryInstitutions = institutions.filter((institution) => {
+    const query = institutionSearch.trim().toLocaleLowerCase();
+    return !query || `${institution.name} ${institution.ownership ?? ""}`.toLocaleLowerCase().includes(query);
+  });
 
-  // Load secondary subjects and institutions up front.
+  // Load secondary subjects and the verified university directory up front.
   useEffect(() => {
     let active = true;
     setLoadingSec(true);
+    setSecError(false);
+    setUnivError(false);
     void (async () => {
-      try {
-        const [s, inst] = await Promise.all([
-          fetchSecondarySubjects(),
-          fetchInstitutions(),
-        ]);
-        if (!active) return;
-        setSecondary(s);
-        setInstitutions(inst);
-      } catch {
-        if (active) setSecError(true);
-      } finally {
-        if (active) setLoadingSec(false);
-      }
+      const [secondaryResult, directoryResult] = await Promise.allSettled([
+        fetchSecondarySubjects(),
+        fetchInstitutions(),
+      ]);
+      if (!active) return;
+
+      if (secondaryResult.status === "fulfilled") setSecondary(secondaryResult.value);
+      else setSecError(true);
+
+      if (directoryResult.status === "fulfilled") setInstitutions(directoryResult.value);
+      else setUnivError(true);
+
+      setLoadingSec(false);
     })();
     return () => {
       active = false;
     };
   }, []);
 
-  // Load faculties when an institution is chosen.
+  // Load faculties only for an independently published catalogue.
   useEffect(() => {
-    if (!institutionId) {
+    if (!institutionId || !cataloguePublished) {
       setFaculties([]);
+      setFacultyId("");
+      setDepartmentId("");
+      setDepartments([]);
+      setCourses([]);
       return;
     }
     let active = true;
@@ -97,7 +110,7 @@ export function SubjectBrowser({ actions, heading, variant = "workspace" }: Subj
     return () => {
       active = false;
     };
-  }, [institutionId]);
+  }, [institutionId, cataloguePublished]);
 
   // Load departments when a faculty is chosen.
   useEffect(() => {
@@ -164,7 +177,7 @@ export function SubjectBrowser({ actions, heading, variant = "workspace" }: Subj
           <GraduationCap size={15} /> Secondary
         </TabButton>
         <TabButton variant={variant} active={tab === "university"} onClick={() => setTab("university")}>
-          <Building2 size={15} /> University
+          <Building2 size={15} /> University directory
         </TabButton>
       </div>
 
@@ -201,79 +214,108 @@ export function SubjectBrowser({ actions, heading, variant = "workspace" }: Subj
             <ErrorNote text="We couldn't load the university catalogue. Please refresh to try again." />
           ) : null}
 
-          {institutions.length === 0 && !secError ? (
-            <EmptyNote text="Universities will appear here once the catalogue is published." />
+          {institutions.length === 0 && !univError ? (
+            <EmptyNote text="No verified university entries are published yet. An administrator must approve the imported NUC directory batches before they appear here." />
           ) : (
             <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <SelectField
-                  label="Institution"
-                  value={institutionId}
-                  onChange={setInstitutionId}
-                  placeholder="Select institution"
-                  options={institutions.map((x) => ({ value: x.id, label: x.name }))}
+              <label className="block">
+                <span className="text-xs font-semibold uppercase tracking-wider text-ink-lighter">Search Nigerian universities</span>
+                <input
+                  type="search"
+                  value={institutionSearch}
+                  onChange={(event) => setInstitutionSearch(event.target.value)}
+                  placeholder="Search by university or ownership"
+                  className="field-control mt-1.5"
                 />
-                <SelectField
-                  label="Faculty"
-                  value={facultyId}
-                  onChange={setFacultyId}
-                  placeholder={institutionId ? "Select faculty" : "Choose institution first"}
-                  disabled={!institutionId || loadingFac}
-                  loading={loadingFac}
-                  options={faculties.map((x) => ({ value: x.id, label: x.name }))}
-                />
-                <SelectField
-                  label="Department"
-                  value={departmentId}
-                  onChange={setDepartmentId}
-                  placeholder={facultyId ? "Select department" : "Choose faculty first"}
-                  disabled={!facultyId || loadingDept}
-                  loading={loadingDept}
-                  options={departments.map((x) => ({ value: x.id, label: x.name }))}
-                />
-              </div>
+              </label>
+              <p className="text-xs text-ink-lighter">{directoryInstitutions.length} of {institutions.length} verified universities shown</p>
+              <SelectField
+                label="Nigerian university"
+                value={institutionId}
+                onChange={setInstitutionId}
+                placeholder={directoryInstitutions.length ? "Select a verified university" : "No matching university"}
+                options={directoryInstitutions.map((x) => ({ value: x.id, label: x.name }))}
+              />
 
-              {departmentId ? (
-                loadingCourses ? (
-                  <Spinner label="Loading courses..." />
-                ) : courses.length === 0 ? (
-                  <EmptyNote text="No courses found for this department yet." />
-                ) : (
-                  <div className="space-y-6">
-                    {levelGroups.map((group) => (
-                      <div key={group.key}>
-                        <div className="flex items-center gap-2">
-                          <Layers size={15} className="text-accent" />
-                          <h3 className="font-display text-sm font-bold uppercase tracking-wider text-ink">
-                            {group.label}
-                          </h3>
-                          <span className="text-xs text-ink-lighter">
-                            {group.subjects.length} course
-                            {group.subjects.length === 1 ? "" : "s"}
-                          </span>
-                        </div>
-                        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                          {group.subjects.map((s, i) => (
-                            <motion.div
-                              key={s.id}
-                              initial={reduce ? false : { opacity: 0, y: 12 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              transition={{ duration: 0.25, delay: Math.min(i * 0.02, 0.2) }}
-                            >
-                              <SubjectCard subject={s}>{actions(s)}</SubjectCard>
-                            </motion.div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
+              {selectedInstitution && !cataloguePublished ? (
+                <div className="border-y border-dashed border-line px-5 py-8" role="status">
+                  <p className="font-semibold text-ink">Verified institution directory entry</p>
+                  <p className="mt-2 text-sm leading-6 text-ink-soft">
+                    This university is listed in the current NUC directory. Its Examify course catalogue, lessons, and CBT questions have not been published yet.
+                  </p>
+                </div>
+              ) : selectedInstitution ? (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <SelectField
+                      label="Faculty"
+                      value={facultyId}
+                      onChange={setFacultyId}
+                      placeholder="Select faculty"
+                      disabled={loadingFac}
+                      loading={loadingFac}
+                      options={faculties.map((x) => ({ value: x.id, label: x.name }))}
+                    />
+                    <SelectField
+                      label="Department"
+                      value={departmentId}
+                      onChange={setDepartmentId}
+                      placeholder={facultyId ? "Select department" : "Choose faculty first"}
+                      disabled={!facultyId || loadingDept}
+                      loading={loadingDept}
+                      options={departments.map((x) => ({ value: x.id, label: x.name }))}
+                    />
                   </div>
-                )
+
+                  {departmentId ? (
+                    loadingCourses ? (
+                      <Spinner label="Loading courses..." />
+                    ) : courses.length === 0 ? (
+                      <EmptyNote text="No courses found for this department yet." />
+                    ) : (
+                      <div className="space-y-6">
+                        {levelGroups.map((group) => (
+                          <div key={group.key}>
+                            <div className="flex items-center gap-2">
+                              <Layers size={15} className="text-accent" />
+                              <h3 className="font-display text-sm font-bold uppercase tracking-wider text-ink">
+                                {group.label}
+                              </h3>
+                              <span className="text-xs text-ink-lighter">
+                                {group.subjects.length} course
+                                {group.subjects.length === 1 ? "" : "s"}
+                              </span>
+                            </div>
+                            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                              {group.subjects.map((s, i) => (
+                                <motion.div
+                                  key={s.id}
+                                  initial={reduce ? false : { opacity: 0, y: 12 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  transition={{ duration: 0.25, delay: Math.min(i * 0.02, 0.2) }}
+                                >
+                                  <SubjectCard subject={s}>{actions(s)}</SubjectCard>
+                                </motion.div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  ) : (
+                    <div className="border-y border-dashed border-line px-5 py-10 text-center">
+                      <Building2 size={22} className="mx-auto text-ink-lighter" />
+                      <p className="mt-3 text-sm text-ink-soft">
+                        Pick a faculty and department to see the published courses by level.
+                      </p>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="border-y border-dashed border-line px-5 py-10 text-center">
                   <Building2 size={22} className="mx-auto text-ink-lighter" />
                   <p className="mt-3 text-sm text-ink-soft">
-                    Pick an institution, faculty, and department to see your
-                    courses by level.
+                    Select a verified university to see its availability.
                   </p>
                 </div>
               )}

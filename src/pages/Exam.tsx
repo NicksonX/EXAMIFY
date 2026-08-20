@@ -1,21 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
 import {
   Clock,
-  ChevronLeft,
   ChevronRight,
   X,
   AlertTriangle,
   CheckCircle2,
   Loader2,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
 import {
   startExam,
+  resumeExam,
+  saveExamAnswer,
+  advanceExamAttempt,
   submitExam,
   ExamError,
   type StartExamResponse,
-  type ExamQuestion,
   type ExamMode,
   type AnswersMap,
 } from "@/lib/exams";
@@ -26,22 +30,16 @@ interface StoredExam {
   attemptId: string;
   subjectId: string;
   mode: ExamMode;
-  subjectName: string;
-  questionCount: number;
-  questions: ExamQuestion[];
-  answers: AnswersMap;
-  endsAt: number; // epoch ms
+  topicId: string | null;
+  protocolVersion: 2;
+  questionIndex: number;
+  questionId: string;
+  selectedOption: number;
+  progressVersion: number;
 }
 
-// One slot per subject + mode so a student can resume after a refresh,
-// and starting a different subject does not wipe this one's progress.
-function storageKey(subjectId: string, mode: ExamMode): string {
-  return `examify:exam:${subjectId}:${mode}`;
-}
-
-function durationMinutesFor(count: number): number {
-  // About one minute per question, with a sensible floor.
-  return Math.max(10, count);
+function storageKey(userId: string, subjectId: string, mode: ExamMode, topicId: string | null): string {
+  return `examify:exam:${userId}:${subjectId}:${mode}:${topicId ?? "all"}`;
 }
 
 function formatClock(totalSeconds: number): string {
@@ -58,9 +56,16 @@ function loadStored(key: string): StoredExam | null {
     const parsed = JSON.parse(raw) as StoredExam;
     if (
       !parsed ||
-      !Array.isArray(parsed.questions) ||
-      parsed.questions.length === 0 ||
-      typeof parsed.endsAt !== "number"
+      typeof parsed.attemptId !== "string" ||
+      typeof parsed.subjectId !== "string" ||
+      parsed.protocolVersion !== 2 ||
+      typeof parsed.questionIndex !== "number" ||
+      typeof parsed.questionId !== "string" ||
+      !Number.isInteger(parsed.selectedOption) ||
+      parsed.selectedOption < 0 ||
+      parsed.selectedOption > 3 ||
+      !Number.isInteger(parsed.progressVersion) ||
+      parsed.progressVersion < 0
     ) {
       return null;
     }
@@ -188,9 +193,13 @@ export function Exam() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const reduce = useReducedMotion();
+  const { user } = useAuth();
 
   const subjectId = searchParams.get("subject_id");
-  const mode = (searchParams.get("mode") as ExamMode) || "full";
+  const modeParam = searchParams.get("mode") ?? "full";
+  const mode: ExamMode | null = modeParam === "full" || modeParam === "topic" || modeParam === "lesson"
+    ? modeParam
+    : null;
   const topicId = searchParams.get("topic_id");
   const countParam = searchParams.get("count");
 
@@ -198,18 +207,23 @@ export function Exam() {
   const [exam, setExam] = useState<StartExamResponse | null>(null);
   const [answers, setAnswers] = useState<AnswersMap>({});
   const [current, setCurrent] = useState(0);
+  const [progressVersion, setProgressVersion] = useState(0);
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [transitioning, setTransitioning] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [modal, setModal] = useState<null | "submit" | "exit">(null);
+  const [audioMuted, setAudioMuted] = useState(false);
 
   const submittedRef = useRef(false);
   const answersRef = useRef<AnswersMap>({});
+  const progressVersionRef = useRef(0);
   const attemptIdRef = useRef<string | null>(null);
   const keyRef = useRef<string | null>(null);
-  const endsAtRef = useRef<number>(0);
+  const deadlineRef = useRef<number>(0);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
-  const questions = exam?.questions ?? [];
+  const questions = useMemo(() => exam?.questions ?? [], [exam?.questions]);
   const total = exam?.question_count ?? questions.length ?? 0;
   const q = questions[current];
   const answeredCount = questions.filter(
@@ -222,73 +236,95 @@ export function Exam() {
   }, [answers]);
 
   useEffect(() => {
+    progressVersionRef.current = progressVersion;
+  }, [progressVersion]);
+
+  useEffect(() => {
     attemptIdRef.current = exam?.attempt_id ?? null;
   }, [exam]);
 
-  // Start (or resume) the exam on mount.
+  // Start or resume the server-owned attempt on mount.
   useEffect(() => {
-    if (!subjectId) {
-      setErrorMsg(
-        "This exam link is missing a subject. Pick one from your dashboard to start."
-      );
+    if (!user) return;
+    if (!subjectId || !mode) {
+      setErrorMsg("This exam link is invalid. Pick an exam from Practice to continue.");
       setPhase("error");
       return;
     }
 
-    const key = storageKey(subjectId, mode);
+    const key = storageKey(user.id, subjectId, mode, topicId);
     keyRef.current = key;
-
     const stored = loadStored(key);
-    if (stored) {
-      setExam({
-        attempt_id: stored.attemptId,
-        subject_id: stored.subjectId,
-        subject_name: stored.subjectName,
-        mode: stored.mode,
-        question_count: stored.questionCount,
-        questions: stored.questions,
-      });
-      setAnswers(stored.answers ?? {});
-      setCurrent(0);
-      endsAtRef.current = stored.endsAt;
-      setSecondsLeft(Math.max(0, Math.round((stored.endsAt - Date.now()) / 1000)));
-      setPhase("active");
-      return;
-    }
-
     const qCount = countParam ? Number(countParam) : undefined;
-    const questionCount =
-      qCount && Number.isFinite(qCount) && qCount > 0 ? qCount : undefined;
+    const questionCount = qCount && Number.isFinite(qCount) && qCount > 0 ? qCount : undefined;
 
     let active = true;
     void (async () => {
       try {
-        const resp = await startExam({
-          subjectId,
-          mode,
-          topicId: topicId || null,
-          questionCount,
-        });
+        let resp: StartExamResponse;
+        if (stored) {
+          try {
+            resp = await resumeExam(stored.attemptId);
+          } catch (resumeError) {
+            if (!(resumeError instanceof ExamError && resumeError.code === "ATTEMPT_NOT_FOUND")) {
+              throw resumeError;
+            }
+            clearStored(key);
+            resp = await startExam({ subjectId, mode, topicId: topicId || null, questionCount });
+          }
+        } else {
+          resp = await startExam({ subjectId, mode, topicId: topicId || null, questionCount });
+        }
         if (!active) return;
 
-        const endsAt = Date.now() + durationMinutesFor(resp.question_count) * 60_000;
-        endsAtRef.current = endsAt;
-        const storedExam: StoredExam = {
-          attemptId: resp.attempt_id,
-          subjectId,
-          mode,
-          subjectName: resp.subject_name,
-          questionCount: resp.question_count,
-          questions: resp.questions,
-          answers: {},
-          endsAt,
-        };
-        saveStored(key, storedExam);
+        // A completed protocol-v2 attempt can be returned after the final
+        // advance but before the client navigated away. Finalize it instead
+        // of rendering the last question a second time.
+        if (resp.current_question_index >= resp.question_count) {
+          try {
+            await submitExam(resp.attempt_id);
+            if (active) navigate(`/result/${resp.attempt_id}`, { replace: true });
+          } catch (submitError) {
+            if (active) {
+              setErrorMsg(
+                submitError instanceof ExamError && submitError.code === "ALREADY_SUBMITTED"
+                  ? "This exam is already complete. Open Results to review it."
+                  : "We could not finish this exam. Please open Results and try again.",
+              );
+              setPhase("error");
+            }
+          }
+          return;
+        }
 
+        const serverAnswers = resp.answers && typeof resp.answers === "object" ? resp.answers : {};
+        const serverCurrent = Math.min(
+          Math.max(0, resp.current_question_index),
+          Math.max(0, resp.questions.length - 1),
+        );
+        const currentQuestion = resp.questions[serverCurrent];
+        const pendingMatches = Boolean(
+          stored
+          && stored.attemptId === resp.attempt_id
+          && stored.protocolVersion === resp.progress_protocol_version
+          && stored.questionIndex === resp.current_question_index
+          && stored.questionId === currentQuestion?.id
+          && stored.progressVersion === resp.progress_version,
+        );
+        const nextAnswers = pendingMatches && currentQuestion && stored
+          ? { ...serverAnswers, [currentQuestion.id]: stored.selectedOption }
+          : serverAnswers;
+        if (stored && !pendingMatches) clearStored(key);
+        const deadline = Date.parse(resp.deadline_at);
+        if (!Number.isFinite(deadline)) throw new Error("Invalid server deadline");
+
+        deadlineRef.current = deadline;
+        progressVersionRef.current = resp.progress_version;
         setExam(resp);
-        setAnswers({});
-        setCurrent(0);
-        setSecondsLeft(Math.max(0, Math.round((endsAt - Date.now()) / 1000)));
+        setAnswers(nextAnswers);
+        setProgressVersion(resp.progress_version);
+        setCurrent(serverCurrent);
+        setSecondsLeft(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
         setPhase("active");
       } catch (e) {
         if (!active) return;
@@ -300,13 +336,17 @@ export function Exam() {
           return;
         }
         if (e instanceof ExamError && e.code === "NO_QUESTIONS") {
-          setErrorMsg(
-            "There are no questions for this subject yet. We are adding more soon."
-          );
+          setErrorMsg("There are no questions for this subject yet. We are adding more soon.");
         } else if (e instanceof ExamError && e.code === "SUBJECT_NOT_FOUND") {
-          setErrorMsg("We could not find that subject. Pick another from your dashboard.");
+          setErrorMsg("We could not find that subject. Pick another from Practice.");
+        } else if (e instanceof ExamError && e.code === "TOPIC_NOT_FOUND") {
+          setErrorMsg("That topic is not available for the selected subject.");
+        } else if (e instanceof ExamError && e.code === "LEGACY_ATTEMPT") {
+          setErrorMsg("This earlier attempt uses an older exam format and cannot be resumed securely. Start a new practice exam instead.");
+        } else if (e instanceof ExamError && e.code === "ATTEMPT_EXPIRED") {
+          setErrorMsg("This attempt has expired. Start a new practice exam to continue.");
         } else {
-          setErrorMsg("We could not start your exam right now. Please try again.");
+          setErrorMsg("We could not prepare this exam right now. Please try again.");
         }
         setPhase("error");
       }
@@ -316,15 +356,27 @@ export function Exam() {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subjectId, mode]);
+  }, [user?.id, subjectId, mode, topicId]);
 
-  // Countdown ticker (runs only while the exam is active).
+  // The server deadline is authoritative; this clock is presentation only.
   useEffect(() => {
     if (phase !== "active") return;
-    const t = setInterval(() => {
-      setSecondsLeft((s) => Math.max(0, s - 1));
-    }, 1000);
-    return () => clearInterval(t);
+    const updateClock = () => {
+      setSecondsLeft(Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000)));
+    };
+    updateClock();
+    const timer = setInterval(updateClock, 1000);
+    return () => clearInterval(timer);
+  }, [phase]);
+
+  // Prevent browser back navigation while an attempt is active.
+  useEffect(() => {
+    if (phase !== "active") return;
+    const state = { examifyExam: true };
+    window.history.pushState(state, "", window.location.href);
+    const preventBack = () => window.history.pushState(state, "", window.location.href);
+    window.addEventListener("popstate", preventBack);
+    return () => window.removeEventListener("popstate", preventBack);
   }, [phase]);
 
   // Latest submit handler, kept in a ref so effects read a fresh closure.
@@ -339,7 +391,24 @@ export function Exam() {
       setModal(null);
       setPhase("submitting");
       try {
-        await submitExam(attemptId, answersRef.current);
+        const currentQuestion = questions[current];
+        if (currentQuestion && exam?.progress_protocol_version === 2 && current < total) {
+          const selectedOption = answersRef.current[currentQuestion.id] ?? null;
+          try {
+            const saved = await saveExamAnswer({
+              attemptId,
+              questionIndex: current,
+              questionId: currentQuestion.id,
+              selectedOption,
+              progressVersion: progressVersionRef.current,
+            });
+            progressVersionRef.current = saved.progress_version;
+            setProgressVersion(saved.progress_version);
+          } catch (saveError) {
+            if (!(saveError instanceof ExamError && saveError.code === "ATTEMPT_EXPIRED")) throw saveError;
+          }
+        }
+        await submitExam(attemptId);
         clearStored(keyRef.current);
         navigate(`/result/${attemptId}`, { replace: true });
       } catch (e) {
@@ -374,31 +443,118 @@ export function Exam() {
     };
   }, [exam?.subject_name]);
 
-  function selectAnswer(qid: string, optionIndex: number) {
-    setAnswers((prev) => {
-      const next = { ...prev, [qid]: optionIndex };
-      if (keyRef.current) {
-        saveStored(keyRef.current, {
-          attemptId: attemptIdRef.current ?? "",
-          subjectId: subjectId ?? "",
-          mode,
-          subjectName: exam?.subject_name ?? "",
-          questionCount: total,
-          questions,
-          answers: next,
-          endsAt: endsAtRef.current,
-        });
-      }
-      return next;
+  // Keep only a bounded recovery item locally. The server-owned save happens
+  // immediately before advancing, so a debounced save cannot race the
+  // optimistic-concurrency boundary used by advance_exam_attempt.
+  useEffect(() => {
+    if (phase !== "active" || !exam || exam.progress_protocol_version !== 2 || !mode || !subjectId || !keyRef.current) return;
+    const question = questions[current];
+    const selectedOption = question ? answers[question.id] : undefined;
+    if (!question || selectedOption === undefined) {
+      clearStored(keyRef.current);
+      return;
+    }
+
+    saveStored(keyRef.current, {
+      attemptId: exam.attempt_id,
+      subjectId,
+      mode,
+      topicId,
+      protocolVersion: exam.progress_protocol_version,
+      questionIndex: current,
+      questionId: question.id,
+      selectedOption,
+      progressVersion,
     });
+  }, [answers, current, exam, mode, phase, progressVersion, questions, subjectId, topicId]);
+
+  function selectAnswer(qid: string, optionIndex: number) {
+    if (qid !== q?.id || transitioning || optionIndex < 0 || optionIndex > 3) return;
+    setAnswers((prev) => ({ ...prev, [qid]: optionIndex }));
   }
 
-  function goPrev() {
-    setCurrent((i) => Math.max(0, i - 1));
+  async function playNextBeep() {
+    if (audioMuted || typeof window === "undefined" || !window.AudioContext) return;
+    const context = audioContextRef.current ?? new window.AudioContext();
+    audioContextRef.current = context;
+    try {
+      if (context.state === "suspended") await context.resume();
+    } catch {
+      return;
+    }
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(660, context.currentTime);
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.045, context.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.11);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.12);
   }
 
-  function goNext() {
-    setCurrent((i) => Math.min(total - 1, i + 1));
+  function actionErrorMessage(error: unknown): string {
+    if (!(error instanceof ExamError)) {
+      return "We could not save this answer. Check your connection and try again.";
+    }
+    if (error.code === "ATTEMPT_EXPIRED") {
+      return "Time has expired. Your exam will be submitted automatically.";
+    }
+    if (error.code === "PROGRESS_STALE") {
+      return "This exam changed in another tab. Refresh the page to continue safely.";
+    }
+    if (error.code === "LEGACY_ATTEMPT") {
+      return "This attempt uses the retired exam protocol. Start a new exam from Practice.";
+    }
+    if (error.code === "UNKNOWN") {
+      return "The exam server is missing the current answer-save update. Ask the administrator to apply the latest objective-exam database migration.";
+    }
+    return "We could not save this answer. Check your connection and try again.";
+  }
+
+  async function goNext() {
+    if (!exam || !q || current >= total || transitioning) return;
+    setTransitioning(true);
+    setSubmitError(null);
+    try {
+      // Save and advance sequentially. Both calls use the same server version;
+      // this avoids a background save racing the optimistic-concurrency check.
+      const saved = await saveExamAnswer({
+        attemptId: exam.attempt_id,
+        questionIndex: current,
+        questionId: q.id,
+        selectedOption: answers[q.id] ?? null,
+        progressVersion: progressVersionRef.current,
+      });
+      progressVersionRef.current = saved.progress_version;
+      setProgressVersion(saved.progress_version);
+      const advanced = await advanceExamAttempt({
+        attemptId: exam.attempt_id,
+        questionIndex: current,
+        questionId: q.id,
+        selectedOption: answers[q.id] ?? null,
+        progressVersion: saved.progress_version,
+      });
+      progressVersionRef.current = advanced.progress_version;
+      setProgressVersion(advanced.progress_version);
+      clearStored(keyRef.current);
+      void playNextBeep();
+      if (advanced.current_question_index >= total) {
+        void doSubmitRef.current(false);
+      } else {
+        setCurrent(advanced.current_question_index);
+      }
+    } catch (error) {
+      if (error instanceof ExamError && error.code === "ATTEMPT_EXPIRED") {
+        setSecondsLeft(0);
+      } else {
+        setSubmitError(actionErrorMessage(error));
+      }
+    } finally {
+      setTransitioning(false);
+    }
   }
 
   // ----- Loading -----
@@ -455,6 +611,15 @@ export function Exam() {
               <Clock size={15} aria-hidden />
               {formatClock(secondsLeft)}
             </div>
+            <button
+              type="button"
+              onClick={() => setAudioMuted((muted) => !muted)}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-soft transition hover:bg-ink/5"
+              aria-label={audioMuted ? "Unmute next-question sound" : "Mute next-question sound"}
+              aria-pressed={audioMuted}
+            >
+              {audioMuted ? <VolumeX size={17} aria-hidden /> : <Volume2 size={17} aria-hidden />}
+            </button>
             <button
               type="button"
               onClick={() => setModal("exit")}
@@ -519,6 +684,7 @@ export function Exam() {
                     key={i}
                     type="button"
                     onClick={() => selectAnswer(q.id, i)}
+                    disabled={transitioning}
                     aria-pressed={selected}
                     className={`flex w-full items-start gap-3 rounded-xl border p-4 text-left transition ${
                       selected
@@ -546,10 +712,9 @@ export function Exam() {
 
         {/* Desktop actions */}
         <div className="mt-6 hidden items-center justify-between gap-3 sm:flex">
-          <button type="button" onClick={goPrev} disabled={current === 0} className="btn-secondary"><ChevronLeft size={16} aria-hidden /> Previous</button>
           <div className="flex items-center gap-3">
-            <button type="button" onClick={() => setModal("submit")} className="btn-primary"><CheckCircle2 size={16} aria-hidden /> Submit</button>
-            <button type="button" onClick={goNext} disabled={current >= total - 1} className="btn-secondary">Next <ChevronRight size={16} aria-hidden /></button>
+            <button type="button" onClick={() => setModal("submit")} disabled={transitioning} className="btn-primary"><CheckCircle2 size={16} aria-hidden /> Submit</button>
+            <button type="button" onClick={() => void goNext()} disabled={transitioning || current >= total} className="btn-secondary">{current >= total - 1 ? "Finish" : "Next"} <ChevronRight size={16} aria-hidden /></button>
           </div>
         </div>
 
@@ -564,22 +729,22 @@ export function Exam() {
               const isCurrent = i === current;
               const isAnswered = answers[qq.id] !== undefined;
               return (
-                <button
+                <span
                   key={qq.id}
-                  type="button"
-                  onClick={() => setCurrent(i)}
-                  aria-label={`Go to question ${i + 1}${isAnswered ? ", answered" : ", not answered"}`}
+                  aria-label={`Question ${i + 1}${isCurrent ? ", current" : isAnswered ? ", answered" : ", remaining"}`}
                   aria-current={isCurrent ? "true" : undefined}
-                  className={`flex h-9 items-center justify-center rounded-lg text-sm font-semibold transition ${
+                  className={`flex h-9 items-center justify-center rounded-lg text-sm font-semibold ${
                     isCurrent
                       ? "bg-accent text-white ring-2 ring-accent ring-offset-1 ring-offset-surface"
+                      : i < current
+                      ? "bg-ink/10 text-ink-lighter"
                       : isAnswered
-                      ? "bg-accent/10 text-accent hover:bg-accent/20"
-                      : "bg-ink/5 text-ink-soft hover:bg-ink/10"
+                      ? "bg-accent/10 text-accent"
+                      : "bg-ink/5 text-ink-soft"
                   }`}
                 >
                   {i + 1}
-                </button>
+                </span>
               );
             })}
           </div>
@@ -587,10 +752,9 @@ export function Exam() {
       </main>
 
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-surface/95 px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur sm:hidden">
-        <div className="mx-auto grid max-w-3xl grid-cols-[auto_1fr_auto] items-center gap-2">
-          <button type="button" onClick={goPrev} disabled={current === 0} className="btn-secondary h-11 w-11 px-0" aria-label="Previous question"><ChevronLeft size={19} aria-hidden /></button>
-          <button type="button" onClick={() => setModal("submit")} className="btn-primary min-w-0"><CheckCircle2 size={16} aria-hidden /> Submit exam</button>
-          <button type="button" onClick={goNext} disabled={current >= total - 1} className="btn-secondary h-11 w-11 px-0" aria-label="Next question"><ChevronRight size={19} aria-hidden /></button>
+        <div className="mx-auto grid max-w-3xl grid-cols-[1fr_auto] items-center gap-2">
+          <button type="button" onClick={() => setModal("submit")} disabled={transitioning} className="btn-primary min-w-0"><CheckCircle2 size={16} aria-hidden /> Submit exam</button>
+          <button type="button" onClick={() => void goNext()} disabled={transitioning || current >= total} className="btn-secondary h-11 w-11 px-0" aria-label={current >= total - 1 ? "Finish exam" : "Next question"}><ChevronRight size={19} aria-hidden /></button>
         </div>
       </div>
 

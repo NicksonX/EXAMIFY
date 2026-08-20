@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -16,7 +17,8 @@ interface AccountStateContextValue {
   error: string | null;
   refreshAccountState: () => Promise<void>;
   acceptCurrentTerms: () => Promise<AccountState>;
-  completeOnboardingProfile: (username: string, avatar: File) => Promise<AccountState>;
+  completeOnboardingProfile: (username: string, avatar: File | null) => Promise<AccountState>;
+  replaceProfileAvatar: (avatar: File) => Promise<AccountState>;
 }
 
 const AccountStateContext = createContext<AccountStateContextValue | undefined>(undefined);
@@ -75,8 +77,10 @@ export function AccountStateProvider({ children }: { children: ReactNode }) {
   const [accountState, setAccountState] = useState<AccountState | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestGeneration = useRef(0);
 
   const refreshAccountState = useCallback(async () => {
+    const generation = ++requestGeneration.current;
     if (!user) {
       setAccountState(null);
       setError(null);
@@ -90,6 +94,7 @@ export function AccountStateProvider({ children }: { children: ReactNode }) {
       "get-account-state",
       { body: {} },
     );
+    if (generation !== requestGeneration.current) return;
     if (functionError) {
       setAccountState(null);
       setError(accountStateError);
@@ -101,25 +106,38 @@ export function AccountStateProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void refreshAccountState();
-  }, [refreshAccountState]);
+    if (!user) return;
+    const refreshTimer = window.setInterval(() => {
+      void refreshAccountState();
+    }, 50 * 60 * 1000);
+    return () => window.clearInterval(refreshTimer);
+  }, [refreshAccountState, user]);
 
   const acceptCurrentTerms = useCallback(async (): Promise<AccountState> => {
     const { data, error: rpcError } = await supabase.rpc("accept_current_terms");
     if (rpcError) throw new Error(rpcError.message || "We couldn't record your acceptance. Please try again.");
 
     const nextState = accountStateFrom(data);
-    setAccountState(nextState);
+    setAccountState((previous) => {
+      if (nextState.profile?.avatarUrl || !previous?.profile?.avatarUrl) return nextState;
+      return {
+        ...nextState,
+        profile: nextState.profile
+          ? { ...nextState.profile, avatarUrl: previous.profile.avatarUrl }
+          : previous.profile,
+      };
+    });
     setError(null);
     return nextState;
   }, []);
 
   const completeOnboardingProfile = useCallback(async (
     username: string,
-    avatar: File,
+    avatar: File | null,
   ): Promise<AccountState> => {
     const body = new FormData();
     body.set("username", username);
-    body.set("avatar", avatar);
+    if (avatar) body.set("avatar", avatar);
 
     const { data, error: functionError } = await supabase.functions.invoke(
       "complete-onboarding-profile",
@@ -138,6 +156,26 @@ export function AccountStateProvider({ children }: { children: ReactNode }) {
     return nextState;
   }, []);
 
+  const replaceProfileAvatar = useCallback(async (avatar: File): Promise<AccountState> => {
+    const body = new FormData();
+    body.set("avatar", avatar);
+    const { data, error: functionError } = await supabase.functions.invoke(
+      "update-profile-avatar",
+      { body },
+    );
+    if (functionError) {
+      throw await accountFunctionError(
+        functionError,
+        "We couldn't update your profile picture. Please try again.",
+      );
+    }
+
+    const nextState = completedAccountStateFrom(data);
+    setAccountState(nextState);
+    setError(null);
+    return nextState;
+  }, []);
+
   return (
     <AccountStateContext.Provider
       value={{
@@ -147,6 +185,7 @@ export function AccountStateProvider({ children }: { children: ReactNode }) {
         refreshAccountState,
         acceptCurrentTerms,
         completeOnboardingProfile,
+        replaceProfileAvatar,
       }}
     >
       {children}

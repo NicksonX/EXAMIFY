@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
 import { BookOpen, Check, Crown, Download, Loader2, Lock, RotateCcw, Target } from "lucide-react";
@@ -48,6 +48,20 @@ function expiryCopy(info: EntitlementInfo | null): string | null {
   return `Active until ${date.toLocaleDateString("en-NG", { day: "numeric", month: "long", year: "numeric" })}`;
 }
 
+function trialUnlockCopy(value: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString("en-NG", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 export function Upgrade() {
   const location = useLocation();
   const reduce = useReducedMotion();
@@ -62,10 +76,13 @@ export function Upgrade() {
   const reason = (location.state as { reason?: string } | null)?.reason;
   const reasonCopy = reason ? REASON_COPY[reason] : null;
   const sortedPlans = [...plans].sort((a, b) => a.sort_order - b.sort_order);
-  const checkoutCanResume = openCheckout?.status === "initialized";
+  const checkoutLocked = info?.trial === true || Boolean(info?.checkoutLockedUntil);
+  const checkoutLockedUntil = info?.checkoutLockedUntil ?? (info?.trial ? info.trialEndsAt ?? null : null);
+  const checkoutCanResume = openCheckout?.status === "initialized" && !checkoutLocked;
+  const trialUnlockAt = trialUnlockCopy(checkoutLockedUntil);
 
   useEffect(() => { document.title = "Plans - Examify"; }, []);
-  const load = async () => {
+  const load = useCallback(async () => {
     const [availablePlans, entitlement, existingCheckout] = await Promise.all([
       fetchPlans(),
       getMyEntitlement(),
@@ -74,7 +91,7 @@ export function Upgrade() {
     setPlans(availablePlans);
     setInfo(entitlement);
     setOpenCheckout(existingCheckout);
-  };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -82,7 +99,38 @@ export function Upgrade() {
       if (active) setState("ready");
     }).catch(() => active && setState("error"));
     return () => { active = false; };
-  }, []);
+  }, [load]);
+
+  const refreshCheckout = useCallback(async () => {
+    setState("loading");
+    try {
+      await load();
+      setState("ready");
+    } catch {
+      setState("error");
+    }
+  }, [load]);
+
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshCheckout();
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [refreshCheckout]);
+
+  useEffect(() => {
+    if (!checkoutLockedUntil) return;
+    const expiresAt = Date.parse(checkoutLockedUntil);
+    if (!Number.isFinite(expiresAt)) return;
+    const delay = Math.max(1_000, expiresAt - Date.now() + 1_000);
+    const timer = window.setTimeout(() => void refreshCheckout(), delay);
+    return () => window.clearTimeout(timer);
+  }, [checkoutLockedUntil, refreshCheckout]);
 
   function feedbackFromError(error: unknown, fallback: string): CheckoutFeedback {
     const premiumError = error as PremiumError;
@@ -93,6 +141,10 @@ export function Upgrade() {
   }
 
   async function beginCheckout(planSlug: PaidPlanSlug) {
+    if (checkoutLocked) {
+      setCheckoutFeedback({ message: "Paid plans become available after your 15-day learning trial ends." });
+      return;
+    }
     setCheckoutPlan(planSlug);
     setCheckoutFeedback(null);
     try {
@@ -110,6 +162,10 @@ export function Upgrade() {
   }
 
   async function resumeCheckout() {
+    if (checkoutLocked) {
+      setCheckoutFeedback({ message: "Paid plans become available after your 15-day learning trial ends." });
+      return;
+    }
     setResumingCheckout(true);
     setCheckoutFeedback(null);
     try {
@@ -127,21 +183,12 @@ export function Upgrade() {
     }
   }
 
-  async function refreshCheckout() {
-    setState("loading");
-    try {
-      await load();
-      setState("ready");
-    } catch {
-      setState("error");
-    }
-  }
-
   function actionFor(plan: Plan): { label: string; disabled: boolean; onClick?: () => void } {
-    if (plan.slug === "free") return { label: info?.plan === "free" ? "Current plan" : "Free plan", disabled: true };
+    if (plan.slug === "free") return { label: info?.trial ? "Trial access" : info?.plan === "free" ? "Current plan" : "Free plan", disabled: true };
     if (!isPaidPlanSlug(plan.slug) || !plan.tier) return { label: "Pass unavailable", disabled: true };
 
     const productSlug: PaidPlanSlug = plan.slug;
+    if (checkoutLocked) return { label: "Available after trial", disabled: true };
     if (openCheckout) return { label: `Checkout open for ${planProductLabel(openCheckout.product)}`, disabled: true };
     if (info?.plan === "pro" && plan.tier === "plus") return { label: "Included with Pro", disabled: true };
     if (checkoutPlan === productSlug) return { label: "Opening secure checkout…", disabled: true };
@@ -169,7 +216,8 @@ export function Upgrade() {
 
       {reasonCopy ? <section className="editorial-notice mt-8 flex items-start gap-3"><Lock size={18} className="mt-0.5 shrink-0 text-[#ce4040]" /><div><h2 className="font-editorial-display text-xl font-semibold text-[#14274a]">{reasonCopy.title}</h2><p className="mt-1 text-sm leading-6">{reasonCopy.body}</p></div></section> : null}
       {checkoutFeedback ? <section className="editorial-notice mt-5 flex items-start gap-3" role="alert"><Lock size={18} className="mt-0.5 shrink-0 text-[#ce4040]" aria-hidden /><div><h2 className="font-editorial-display text-xl font-semibold text-[#14274a]">Checkout could not start</h2><p className="mt-1 text-sm leading-6">{checkoutFeedback.message}</p>{checkoutFeedback.requestId ? <p className="mt-2 text-xs font-semibold tracking-wide text-[#34507c]">Support ID: {checkoutFeedback.requestId}</p> : null}</div></section> : null}
-      {info ? <section className="editorial-notice mt-5 flex flex-wrap items-center justify-between gap-3"><span><span className="font-semibold text-[#14274a]">Current access: {planLabel(info.plan)}.</span>{info.plan === "plus" && info.remainingExams !== null ? ` ${info.remainingExams} completed exam${info.remainingExams === 1 ? "" : "s"} remain in this pass.` : ""}</span>{expiryCopy(info) ? <span className="text-xs font-semibold uppercase tracking-[0.1em] text-[#34507c]">{expiryCopy(info)}</span> : null}</section> : null}
+      {info ? <section className="editorial-notice mt-5 flex flex-wrap items-center justify-between gap-3"><span><span className="font-semibold text-[#14274a]">{info.trial ? "Current access: 15-day learning trial." : `Current access: ${planLabel(info.plan)}.`}</span>{info.plan === "plus" && info.remainingExams !== null ? ` ${info.remainingExams} completed exam${info.remainingExams === 1 ? "" : "s"} remain in this pass.` : ""}</span>{expiryCopy(info) ? <span className="text-xs font-semibold uppercase tracking-[0.1em] text-[#34507c]">{expiryCopy(info)}</span> : null}</section> : null}
+      {checkoutLocked ? <section className="editorial-notice mt-5 flex items-start gap-3" role="status"><Lock size={18} className="mt-0.5 shrink-0 text-[#ce4040]" aria-hidden /><div><p className="font-semibold text-[#14274a]">Paid plans are unavailable during your learning trial.</p><p className="mt-1 text-sm leading-6">You can continue using your trial access. Paid plans become available after the server-recorded trial period ends{trialUnlockAt ? ` on ${trialUnlockAt}` : ""}.</p></div></section> : null}
       {openCheckout ? <section className="editorial-notice mt-5" aria-live="polite"><p className="font-semibold text-[#14274a]">A {planProductLabel(openCheckout.product)} checkout is still open.</p><p className="mt-1 text-sm leading-6">{checkoutCanResume ? "Resume the secure payment page or check its payment status before starting another checkout. This protects you from duplicate payment attempts." : "We are safely checking this checkout before allowing another one. Check its payment status; this page cannot activate access by itself."}</p><p className="mt-2 text-xs font-semibold tracking-wide text-[#34507c]">Reference: {openCheckout.reference} · Expires {new Date(openCheckout.expiresAt).toLocaleTimeString("en-NG", { hour: "2-digit", minute: "2-digit" })}</p><div className="mt-4 flex flex-col gap-3 sm:flex-row">{checkoutCanResume ? <button type="button" onClick={() => void resumeCheckout()} disabled={resumingCheckout} className="editorial-button-primary">{resumingCheckout ? <Loader2 size={16} className="animate-spin" /> : <RotateCcw size={16} />} {resumingCheckout ? "Opening checkout…" : "Resume checkout"}</button> : null}<Link to={`/billing/return?reference=${encodeURIComponent(openCheckout.reference)}`} className="editorial-button-secondary">Check payment status</Link><button type="button" onClick={() => void refreshCheckout()} className="editorial-text-link">Refresh status</button></div></section> : null}
 
       {state === "loading" ? <div className="mt-12 flex justify-center"><Loader2 className="h-7 w-7 animate-spin text-[#ce4040]" /></div> : null}

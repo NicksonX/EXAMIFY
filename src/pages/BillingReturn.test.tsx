@@ -17,7 +17,7 @@ import { BillingReturn } from "./BillingReturn";
 
 function renderReturn(reference = "exf_1234567890abcdef") {
   return render(
-    <MemoryRouter initialEntries={[`/billing/return?reference=${reference}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter initialEntries={[`/billing/return?reference=${reference}`]}>
       <BillingReturn />
     </MemoryRouter>,
   );

@@ -185,7 +185,7 @@ function makePdf(attempt: ResultAttempt, studentName: string): Uint8Array {
 }
 
 Deno.serve(async (request) => {
-  let headers: HeadersInit;
+  let headers: HeadersInit = {};
   try {
     headers = corsHeaders(request);
     if (request.method === "OPTIONS") return optionsResponse(request);
@@ -195,19 +195,13 @@ Deno.serve(async (request) => {
     const { attemptId } = await parseJsonBody(request);
     const id = requiredUuid(attemptId, "result");
     const admin = serviceClient();
-    const now = new Date().toISOString();
-    const { data: entitlement, error: entitlementError } = await admin
-      .from("entitlements")
-      .select("id")
-      .eq("user_id", user.id)
-      .eq("plan_slug", "pro")
-      .eq("status", "active")
-      .lte("starts_at", now)
-      .gt("ends_at", now)
-      .limit(1)
-      .maybeSingle();
+    const { data: entitlement, error: entitlementError } = await admin.rpc("get_entitlement_for_user", {
+      p_user_id: user.id,
+    });
     if (entitlementError) throw entitlementError;
-    if (!entitlement) throw new HttpError(403, "PRO_REQUIRED", "A current Pro pass is required to download a result PDF.");
+    const canDownload = entitlement && typeof entitlement === "object" && !Array.isArray(entitlement)
+      && (entitlement as Record<string, unknown>).can_download_results === true;
+    if (!canDownload) throw new HttpError(403, "PRO_REQUIRED", "Your current Examify access does not include result PDFs.");
 
     const { data, error } = await admin
       .from("exam_attempts")
@@ -226,7 +220,9 @@ Deno.serve(async (request) => {
         ? user.user_metadata.name
         : "Examify student";
     const pdf = makePdf(attempt, profileName);
-    return new Response(pdf, {
+    const pdfBody = new ArrayBuffer(pdf.byteLength);
+    new Uint8Array(pdfBody).set(pdf);
+    return new Response(pdfBody, {
       status: 200,
       headers: {
         ...headers,

@@ -6,7 +6,7 @@ import { WalletReturn } from "./WalletReturn";
 describe("WalletReturn", () => {
   it("keeps legacy callbacks support-oriented without checking or crediting anything", () => {
     render(
-      <MemoryRouter initialEntries={["/wallet/return?reference=wlt_1234567890abcdef"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter initialEntries={["/wallet/return?reference=wlt_1234567890abcdef"]}>
         <WalletReturn />
       </MemoryRouter>,
     );

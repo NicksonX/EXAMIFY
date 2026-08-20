@@ -6,6 +6,10 @@ import { Dashboard } from "@/pages/Dashboard";
 import { Exam } from "@/pages/Exam";
 import { Result } from "@/pages/Result";
 import { Upgrade } from "@/pages/Upgrade";
+import { Practice } from "@/pages/Practice";
+import { Results } from "@/pages/Results";
+import { MainExams } from "@/pages/MainExams";
+import { Assessment } from "@/pages/Assessment";
 import { BillingReturn } from "@/pages/BillingReturn";
 import { Study } from "@/pages/Study";
 import { StudyView } from "@/pages/StudyView";
@@ -39,10 +43,6 @@ export default function App() {
       <Route element={<ProtectedRoute><OnboardingGate><EditorialShell /></OnboardingGate></ProtectedRoute>}>
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/terms/accept" element={<Terms acceptanceRequired />} />
-        <Route path="/study" element={<Study />} />
-        <Route path="/study/:id" element={<StudyView />} />
-        <Route path="/result/:id" element={<Result />} />
-        <Route path="/upgrade" element={<Upgrade />} />
       </Route>
 
       <Route element={<ProtectedRoute><EditorialShell /></ProtectedRoute>}>
@@ -52,6 +52,15 @@ export default function App() {
 
       <Route element={<ProtectedRoute><OnboardingGate><AppShell /></OnboardingGate></ProtectedRoute>}>
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/practice" element={<Practice />} />
+        <Route path="/main-exams" element={<MainExams />} />
+        <Route path="/assessment/attempt/:attemptId" element={<Assessment />} />
+        <Route path="/assessment/:definitionId" element={<Assessment />} />
+        <Route path="/results" element={<Results />} />
+        <Route path="/study" element={<Study />} />
+        <Route path="/study/:id" element={<StudyView />} />
+        <Route path="/result/:id" element={<Result />} />
+        <Route path="/upgrade" element={<Upgrade />} />
         <Route path="/wallet" element={<Wallet />} />
         <Route path="/referrals" element={<Referrals />} />
         <Route path="/settings" element={<Settings />} />

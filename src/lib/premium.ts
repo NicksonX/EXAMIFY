@@ -42,12 +42,18 @@ interface EntitlementRpcPayload {
   can_download_results?: unknown;
   can_read_plus?: unknown;
   can_read_pro?: unknown;
+  trial?: unknown;
+  trial_ends_at?: unknown;
+  checkout_locked_until?: unknown;
 }
 
 export interface EntitlementInfo {
   plan: PlanSlug;
-  status: "active";
+  status: "active" | "trial";
   endsAt: string | null;
+  trial?: boolean;
+  trialEndsAt?: string | null;
+  checkoutLockedUntil: string | null;
   completedExams: number;
   remainingExams: number | null;
   canTakeExam: boolean;
@@ -84,12 +90,21 @@ function asNonNegativeInteger(value: unknown, fallback: number | null): number |
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
 }
 
+function asIsoTimestamp(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 function entitlementFromPayload(payload: EntitlementRpcPayload): EntitlementInfo {
   const plan = isPlanSlug(payload.plan) ? payload.plan : "free";
   return {
     plan,
-    status: "active",
+    status: payload.status === "trial" ? "trial" : "active",
     endsAt: typeof payload.ends_at === "string" ? payload.ends_at : null,
+    trial: payload.trial === true,
+    trialEndsAt: typeof payload.trial_ends_at === "string" ? payload.trial_ends_at : null,
+    checkoutLockedUntil: asIsoTimestamp(payload.checkout_locked_until),
     completedExams: asNonNegativeInteger(payload.completed_exams, 0) ?? 0,
     remainingExams: asNonNegativeInteger(payload.remaining_exams, null),
     canTakeExam: payload.can_take_exam === true,
@@ -180,6 +195,7 @@ const PUBLIC_PREMIUM_ERRORS: Record<string, string> = {
   DOWNGRADE_NOT_AVAILABLE: "Your active Pro pass already includes Plus access.",
   PAYMENT_INITIALIZATION_REJECTED: "We could not open Paystack checkout. No payment was started, so you can try again.",
   PAYMENT_INITIALIZATION_RECONCILING: "We are checking whether checkout was created. Do not try again yet.",
+  TRIAL_CHECKOUT_LOCKED: "Paid plans become available after your 15-day learning trial ends.",
   PAYMENT_PROVIDER_ERROR: "The payment provider is temporarily unavailable. Try again.",
   ORIGIN_NOT_ALLOWED: "Secure checkout is not available from this address.",
 };

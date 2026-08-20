@@ -1,6 +1,7 @@
 import {
   appUrl,
   corsHeaders,
+  ensureTrialCheckoutAvailable,
   errorResponse,
   HttpError,
   initializePaystackTransaction,
@@ -25,6 +26,7 @@ Deno.serve(async (request) => {
     const body = await parseJsonBody(request);
     const productSlug = requiredPlanProduct(body.planSlug);
     const admin = serviceClient();
+    await ensureTrialCheckoutAvailable(admin, user.id, requestId);
 
     const { data: plan, error: planError } = await admin
       .from("plans")

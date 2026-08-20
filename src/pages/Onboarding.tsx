@@ -3,62 +3,10 @@ import { Camera, CheckCircle2, Loader2, Upload } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAccountState } from "@/context/AccountStateContext";
 import { consumeAccountGateDestination } from "@/lib/authNavigation";
+import { normalisedAvatar, trustedProviderAvatar } from "@/lib/avatar";
 import { useAuth } from "@/context/AuthContext";
 
 const USERNAME_PATTERN = /^[a-z0-9_]{3,20}$/;
-const MAX_SOURCE_AVATAR_BYTES = 10 * 1024 * 1024;
-const MAX_STORED_AVATAR_BYTES = 2 * 1024 * 1024;
-const MAX_AVATAR_EDGE = 1024;
-const MAX_AVATAR_PIXELS = 20_000_000;
-
-function canvasBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error("We couldn't prepare that image. Choose another picture."));
-    }, "image/webp", quality);
-  });
-}
-
-async function normalisedAvatar(file: File): Promise<File> {
-  if (!file.type.startsWith("image/") || file.type === "image/svg+xml") {
-    throw new Error("Choose a standard photo or image file. SVG files are not supported for profile photos.");
-  }
-  if (file.size < 1 || file.size > MAX_SOURCE_AVATAR_BYTES) {
-    throw new Error("Choose an image smaller than 10 MB.");
-  }
-
-  const sourceUrl = URL.createObjectURL(file);
-  try {
-    const image = new Image();
-    image.decoding = "async";
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error("We couldn't read that image. Choose another picture."));
-      image.src = sourceUrl;
-    });
-    if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth * image.naturalHeight > MAX_AVATAR_PIXELS) {
-      throw new Error("Choose an image with smaller dimensions.");
-    }
-
-    const scale = Math.min(1, MAX_AVATAR_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("We couldn't prepare that image. Choose another picture.");
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-
-    let output = await canvasBlob(canvas, 0.86);
-    if (output.size > MAX_STORED_AVATAR_BYTES) output = await canvasBlob(canvas, 0.68);
-    if (output.size > MAX_STORED_AVATAR_BYTES) {
-      throw new Error("That image is too detailed to save under 2 MB. Choose a smaller picture.");
-    }
-    return new File([output], "profile.webp", { type: "image/webp" });
-  } finally {
-    URL.revokeObjectURL(sourceUrl);
-  }
-}
 
 export function Onboarding() {
   const { user } = useAuth();
@@ -72,9 +20,7 @@ export function Onboarding() {
   const avatarSelectionSequence = useRef(0);
   const preview = useMemo(() => (avatar ? URL.createObjectURL(avatar) : null), [avatar]);
   const accountAvatar = accountState?.profile?.avatarUrl
-    ?? (user?.user_metadata?.avatar_url as string | undefined)
-    ?? (user?.user_metadata?.picture as string | undefined)
-    ?? null;
+    ?? trustedProviderAvatar(user);
   const initial = username.trim().charAt(0).toUpperCase()
     || (user?.email?.charAt(0).toUpperCase() ?? "S");
 
@@ -111,8 +57,8 @@ export function Onboarding() {
       setError("Your image is still being prepared. Please wait a moment.");
       return;
     }
-    if (!avatar) {
-      setError("Choose a profile picture to continue.");
+    if (!avatar && !accountAvatar) {
+      setError("Add a profile picture to continue, or sign in with a provider that supplies one.");
       return;
     }
 
@@ -131,7 +77,7 @@ export function Onboarding() {
     <section className="editorial-page-narrow">
       <p className="editorial-kicker">Set up your account</p>
       <h1 className="editorial-section-title mt-5">Make your learning space yours.</h1>
-      <p className="editorial-copy mt-5 max-w-xl">Choose the name learners will see on your Examify account and add a profile photo to complete your setup.</p>
+      <p className="editorial-copy mt-5 max-w-xl">Choose the name learners will see on your Examify account. We use a trusted provider photo automatically when one is available, or you can add your own.</p>
 
       <form className="editorial-panel mt-8 p-5 sm:p-8" onSubmit={(event) => void submit(event)}>
         <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
@@ -140,8 +86,8 @@ export function Onboarding() {
           </div>
           <div>
             <p className="font-editorial-display text-2xl font-semibold tracking-[-0.04em] text-[#14274a]">Your profile photo</p>
-            <p className="mt-1 text-sm leading-6 text-[#34507c]">Required. Choose any browser-supported photo; we safely resize and convert it to a private profile image.</p>
-            <label className="editorial-button-secondary mt-4 cursor-pointer"><Upload size={16} aria-hidden />{normalisingAvatar ? "Preparing image..." : avatar ? "Choose another image" : "Choose image"}<input type="file" accept="image/*" className="sr-only" onChange={(event) => void selectAvatar(event.target.files?.[0] ?? null)} disabled={saving || normalisingAvatar} required /></label>
+            <p className="mt-1 text-sm leading-6 text-[#34507c]">{accountAvatar ? "A trusted provider photo is already available. You can replace it at any time." : "Add a photo if your sign-in provider did not supply one; we safely resize and convert it to a private profile image."}</p>
+            <label className="editorial-button-secondary mt-4 cursor-pointer"><Upload size={16} aria-hidden />{normalisingAvatar ? "Preparing image..." : avatar ? "Choose another image" : accountAvatar ? "Replace image" : "Choose image"}<input type="file" accept="image/*" className="sr-only" onChange={(event) => void selectAvatar(event.target.files?.[0] ?? null)} disabled={saving || normalisingAvatar} required={!accountAvatar} /></label>
           </div>
         </div>
 

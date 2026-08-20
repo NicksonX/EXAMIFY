@@ -13,6 +13,35 @@ function objectKeyForUser(userId: string, value: unknown): string | null {
   return pattern.test(value) ? value : null;
 }
 
+function trustedProviderAvatar(user: {
+  app_metadata?: Record<string, unknown>;
+  user_metadata?: Record<string, unknown>;
+  identities?: Array<{ provider?: string; identity_data?: Record<string, unknown> | null }> | null;
+}): string | null {
+  const provider = typeof user.app_metadata?.provider === "string"
+    ? user.app_metadata.provider
+    : user.identities?.find((identity) => identity.provider)?.provider;
+  if (provider !== "google") return null;
+  const candidates = [
+    user.user_metadata?.avatar_url,
+    user.user_metadata?.picture,
+    ...(user.identities ?? []).flatMap((identity) => [identity.identity_data?.avatar_url, identity.identity_data?.picture]),
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || candidate.length > 2048) continue;
+    try {
+      const url = new URL(candidate);
+      const host = url.hostname.toLowerCase();
+      if (url.protocol === "https:" && (host === "googleusercontent.com" || host.endsWith(".googleusercontent.com") || host === "google.com" || host.endsWith(".google.com"))) {
+        return url.toString();
+      }
+    } catch {
+      // Ignore malformed provider metadata.
+    }
+  }
+  return null;
+}
+
 Deno.serve(async (request) => {
   let headers: HeadersInit = {};
   try {
@@ -36,6 +65,7 @@ Deno.serve(async (request) => {
       : {};
     const objectKey = objectKeyForUser(user.id, profileRecord.profileImageObjectKey);
     let avatarUrl = typeof profileRecord.avatarUrl === "string" ? profileRecord.avatarUrl : null;
+    if (!avatarUrl) avatarUrl = trustedProviderAvatar(user);
     if (objectKey) {
       const { data: signed, error: signedError } = await admin.storage
         .from("profile-avatars")

@@ -8,7 +8,6 @@ describe("Referrals", () => {
     render(
       <MemoryRouter
         initialEntries={["/referrals"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <Routes>
           <Route path="/referrals" element={<Referrals />} />

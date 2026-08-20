@@ -7,11 +7,17 @@ export type SubjectCategory = "secondary" | "university";
 export type ExamFamily = "jamb" | "waec" | "neco" | "post_utme";
 export type Grade = "A" | "B" | "C" | "D" | "E" | "F";
 
+export type DirectoryStatus = "draft" | "verified" | "published" | "retired";
+export type CatalogueStatus = "directory_only" | "catalogue_under_review" | "catalogue_published" | "withdrawn";
+
 export interface Institution {
   id: string;
   slug: string;
   name: string;
   type: "university" | "polytechnic" | "college" | null;
+  ownership?: "federal" | "state" | "private" | "other" | null;
+  directory_status?: DirectoryStatus;
+  catalogue_status?: CatalogueStatus;
 }
 
 export interface Faculty {
@@ -61,8 +67,51 @@ export interface StartExamResponse {
   subject_id: string;
   subject_name: string;
   mode: ExamMode;
+  topic_id?: string | null;
   question_count: number;
   questions: ExamQuestion[];
+  /** Server-recorded selections only; never an answer key. */
+  answers?: AnswersMap;
+  started_at: string;
+  deadline_at: string;
+  progress_protocol_version: 2;
+  current_question_index: number;
+  progress_version: number;
+  resumed?: boolean;
+  expired?: boolean;
+}
+
+export type ResumeExamResponse = StartExamResponse;
+
+export interface SaveExamAnswerResponse {
+  attempt_id: string;
+  question_index: number;
+  question_id: string;
+  selected_option: number | null;
+  progress_version: number;
+  saved_at: string;
+}
+
+export interface AdvanceExamAttemptResponse {
+  attempt_id: string;
+  current_question_index: number;
+  progress_version: number;
+  answered_count: number;
+  advanced_at: string;
+}
+
+export interface OpenExamAttempt {
+  attempt_id: string;
+  subject_id: string;
+  subject_name: string | null;
+  mode: ExamMode;
+  topic_id: string | null;
+  question_count: number;
+  current_question_index: number;
+  progress_version: number;
+  started_at: string;
+  deadline_at: string | null;
+  expired: boolean;
 }
 
 export interface ReviewItem {
@@ -102,6 +151,9 @@ export interface ExamAttempt {
   review: ReviewItem[] | null;
   started_at: string;
   ended_at: string | null;
+  deadline_at?: string | null;
+  submission_reason?: "manual" | "timeout" | "system" | "legacy" | null;
+  score_origin?: "server_scored" | "legacy_unverified" | null;
   subject?: {
     name: string;
     slug: string;
@@ -177,6 +229,14 @@ export type ExamErrorCode =
   | "PLUS_LIMIT_REACHED"
   | "NO_QUESTIONS"
   | "SUBJECT_NOT_FOUND"
+  | "TOPIC_NOT_FOUND"
+  | "INVALID_MODE"
+  | "INVALID_ANSWER"
+  | "INVALID_QUESTION"
+  | "PROGRESS_STALE"
+  | "LEGACY_ATTEMPT"
+  | "EXAM_COMPLETE"
+  | "ATTEMPT_EXPIRED"
   | "NOT_AUTHENTICATED"
   | "ATTEMPT_NOT_FOUND"
   | "ALREADY_SUBMITTED"
@@ -198,6 +258,14 @@ function classifyError(message: string): ExamErrorCode {
   if (m.includes("PLUS_LIMIT_REACHED")) return "PLUS_LIMIT_REACHED";
   if (m.includes("NO_QUESTIONS")) return "NO_QUESTIONS";
   if (m.includes("SUBJECT_NOT_FOUND")) return "SUBJECT_NOT_FOUND";
+  if (m.includes("TOPIC_NOT_FOUND")) return "TOPIC_NOT_FOUND";
+  if (m.includes("INVALID_MODE")) return "INVALID_MODE";
+  if (m.includes("INVALID_ANSWER")) return "INVALID_ANSWER";
+  if (m.includes("INVALID_QUESTION")) return "INVALID_QUESTION";
+  if (m.includes("PROGRESS_STALE")) return "PROGRESS_STALE";
+  if (m.includes("LEGACY_ATTEMPT")) return "LEGACY_ATTEMPT";
+  if (m.includes("EXAM_COMPLETE")) return "EXAM_COMPLETE";
+  if (m.includes("ATTEMPT_EXPIRED")) return "ATTEMPT_EXPIRED";
   if (m.includes("NOT_AUTHENTICATED")) return "NOT_AUTHENTICATED";
   if (m.includes("ATTEMPT_NOT_FOUND")) return "ATTEMPT_NOT_FOUND";
   if (m.includes("ALREADY_SUBMITTED")) return "ALREADY_SUBMITTED";
@@ -213,7 +281,7 @@ export async function startExam(params: {
   topicId?: string | null;
   questionCount?: number;
 }): Promise<StartExamResponse> {
-  const { data, error } = await supabase.rpc("start_exam", {
+  const { data, error } = await supabase.rpc("start_exam_v2", {
     p_subject_id: params.subjectId,
     p_mode: params.mode ?? "full",
     p_topic_id: params.topicId ?? null,
@@ -223,13 +291,59 @@ export async function startExam(params: {
   return data as unknown as StartExamResponse;
 }
 
-export async function submitExam(
-  attemptId: string,
-  answers: AnswersMap
-): Promise<SubmitExamResponse> {
-  const { data, error } = await supabase.rpc("submit_exam", {
+export async function resumeExam(attemptId: string): Promise<ResumeExamResponse> {
+  const { data, error } = await supabase.rpc("resume_exam_v2", {
     p_attempt_id: attemptId,
-    p_answers: answers,
+  });
+  if (error) throw new ExamError(classifyError(error.message), error.message);
+  return data as unknown as ResumeExamResponse;
+}
+
+export async function listOpenExamAttempts(): Promise<OpenExamAttempt[]> {
+  const { data, error } = await supabase.rpc("list_open_exam_attempts");
+  if (error) throw new ExamError(classifyError(error.message), error.message);
+  return Array.isArray(data) ? data as OpenExamAttempt[] : [];
+}
+
+export async function saveExamAnswer(params: {
+  attemptId: string;
+  questionIndex: number;
+  questionId: string;
+  selectedOption: number | null;
+  progressVersion: number;
+}): Promise<SaveExamAnswerResponse> {
+  const { data, error } = await supabase.rpc("save_exam_answer", {
+    p_attempt_id: params.attemptId,
+    p_question_index: params.questionIndex,
+    p_question_id: params.questionId,
+    p_selected_option: params.selectedOption,
+    p_progress_version: params.progressVersion,
+  });
+  if (error) throw new ExamError(classifyError(error.message), error.message);
+  return data as unknown as SaveExamAnswerResponse;
+}
+
+export async function advanceExamAttempt(params: {
+  attemptId: string;
+  questionIndex: number;
+  questionId: string;
+  selectedOption: number | null;
+  progressVersion: number;
+}): Promise<AdvanceExamAttemptResponse> {
+  const { data, error } = await supabase.rpc("advance_exam_attempt", {
+    p_attempt_id: params.attemptId,
+    p_question_index: params.questionIndex,
+    p_question_id: params.questionId,
+    p_selected_option: params.selectedOption,
+    p_progress_version: params.progressVersion,
+  });
+  if (error) throw new ExamError(classifyError(error.message), error.message);
+  return data as unknown as AdvanceExamAttemptResponse;
+}
+
+export async function submitExam(attemptId: string): Promise<SubmitExamResponse> {
+  const { data, error } = await supabase.rpc("submit_exam_v2", {
+    p_attempt_id: attemptId,
   });
   if (error) throw new ExamError(classifyError(error.message), error.message);
   return data as unknown as SubmitExamResponse;
@@ -237,22 +351,24 @@ export async function submitExam(
 
 // ---------- Catalog fetches ----------
 
-export async function fetchSecondarySubjects(): Promise<Subject[]> {
+export async function fetchAllSubjects(): Promise<Subject[]> {
   const { data, error } = await supabase
     .from("subjects")
     .select("*")
-    .eq("category", "secondary")
+    .order("category", { ascending: true })
     .order("sort_order", { ascending: true })
     .order("name", { ascending: true });
   if (error) throw error;
   return (data ?? []) as unknown as Subject[];
 }
 
+export async function fetchSecondarySubjects(): Promise<Subject[]> {
+  const subjects = await fetchAllSubjects();
+  return subjects.filter((subject) => subject.category === "secondary");
+}
+
 export async function fetchInstitutions(): Promise<Institution[]> {
-  const { data, error } = await supabase
-    .from("institutions")
-    .select("*")
-    .order("name", { ascending: true });
+  const { data, error } = await supabase.rpc("get_published_university_directory");
   if (error) throw error;
   return (data ?? []) as unknown as Institution[];
 }
@@ -349,15 +465,37 @@ export async function fetchAttempt(
   return (data as unknown as ExamAttempt) ?? null;
 }
 
-export async function fetchRecentAttempts(limit = 8): Promise<ExamAttempt[]> {
-  const { data, error } = await supabase
+export interface AttemptHistoryPage {
+  rows: ExamAttempt[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export async function fetchAttemptHistory(params: {
+  page?: number;
+  pageSize?: number;
+  subjectId?: string;
+  mode?: ExamMode;
+} = {}): Promise<AttemptHistoryPage> {
+  const page = Math.max(0, params.page ?? 0);
+  const pageSize = Math.min(50, Math.max(1, params.pageSize ?? 20));
+  let query = supabase
     .from("exam_attempts")
-    .select("*, subject:subjects(name, slug, category, code)")
+    .select("*, subject:subjects(name, slug, category, code)", { count: "exact" })
     .not("ended_at", "is", null)
     .order("ended_at", { ascending: false })
-    .limit(limit);
+    .range(page * pageSize, (page + 1) * pageSize - 1);
+  if (params.subjectId) query = query.eq("subject_id", params.subjectId);
+  if (params.mode) query = query.eq("mode", params.mode);
+  const { data, error, count } = await query;
   if (error) throw error;
-  return (data ?? []) as unknown as ExamAttempt[];
+  return { rows: (data ?? []) as unknown as ExamAttempt[], total: count ?? 0, page, pageSize };
+}
+
+export async function fetchRecentAttempts(limit = 8): Promise<ExamAttempt[]> {
+  const result = await fetchAttemptHistory({ page: 0, pageSize: limit });
+  return result.rows;
 }
 
 export async function fetchAttemptStats(): Promise<{

@@ -120,6 +120,36 @@ export function serviceClient(): SupabaseClient {
   );
 }
 
+/**
+ * Checkout eligibility is resolved by Postgres from auth.users.created_at.
+ * Never derive this decision from profile plan fields or browser time.
+ */
+export async function ensureTrialCheckoutAvailable(
+  admin: SupabaseClient,
+  userId: string,
+  requestId?: string,
+): Promise<void> {
+  const { data, error } = await admin.rpc("get_trial_checkout_eligibility", {
+    p_user_id: userId,
+  });
+  if (error) throw error;
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Trial checkout eligibility response was invalid.");
+  }
+  const eligibility = data as Record<string, unknown>;
+  if (eligibility.checkout_locked !== true && eligibility.checkout_locked !== false) {
+    throw new Error("Trial checkout eligibility response was invalid.");
+  }
+  if (eligibility.checkout_locked) {
+    throw new HttpError(
+      403,
+      "TRIAL_CHECKOUT_LOCKED",
+      "Paid plans become available after your 15-day learning trial ends.",
+      requestId,
+    );
+  }
+}
+
 // Use this only after requireUser(). It preserves the caller's JWT so an
 // ownership-enforcing RPC using auth.uid() never runs as the service role.
 export function authenticatedClient(request: Request): SupabaseClient {

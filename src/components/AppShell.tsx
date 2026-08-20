@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { ArrowLeft, BookOpen, ChevronDown, Crown, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck, WalletCards, X } from "lucide-react";
+import { ArrowLeft, BookOpen, ClipboardList, ChevronDown, Crown, FileCheck2, LayoutDashboard, ListChecks, LogOut, Menu, Settings, ShieldCheck, WalletCards, X } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useAccountState } from "@/context/AccountStateContext";
 import { displayIdentity } from "@/lib/accountState";
-import { getPlan, isPremium, planLabel, type PlanSlug } from "@/lib/premium";
+import { getPlanInfo, isPremium, planLabel, type PlanInfo } from "@/lib/premium";
 import { isFinanceAdmin } from "@/lib/access";
 
 const NAV_ITEMS: Array<{
@@ -15,6 +15,9 @@ const NAV_ITEMS: Array<{
 }> = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/study", label: "Study", icon: BookOpen },
+  { to: "/practice", label: "Practice", icon: ListChecks },
+  { to: "/main-exams", label: "Main exams", icon: FileCheck2 },
+  { to: "/results", label: "Results", icon: ClipboardList },
   { to: "/wallet", label: "Wallet", icon: WalletCards, comingSoon: true },
   { to: "/upgrade", label: "Premium", icon: Crown },
 ];
@@ -42,7 +45,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [plan, setPlan] = useState<PlanSlug>("free");
+  const [planInfo, setPlanInfo] = useState<PlanInfo | null>(null);
   const [financeAdmin, setFinanceAdmin] = useState(false);
 
   const name = displayIdentity(
@@ -53,6 +56,8 @@ export function AppShell() {
   const avatar = accountState?.profile?.avatarUrl
     ?? (user?.user_metadata?.avatar_url as string | undefined)
     ?? (user?.user_metadata?.picture as string | undefined);
+  const plan = planInfo?.plan ?? "free";
+  const trial = planInfo?.trial === true;
   const premium = isPremium(plan);
   const mobileNavItems: typeof NAV_ITEMS = financeAdmin
     ? [...NAV_ITEMS, { to: "/admin", label: "Admin", icon: ShieldCheck }]
@@ -60,7 +65,7 @@ export function AppShell() {
 
   useEffect(() => {
     let active = true;
-    void getPlan().then((profilePlan) => active && setPlan(profilePlan)).catch(() => undefined);
+    void getPlanInfo().then((nextPlanInfo) => active && setPlanInfo(nextPlanInfo)).catch(() => undefined);
     void isFinanceAdmin().then((allowed) => active && setFinanceAdmin(allowed));
     return () => {
       active = false;
@@ -121,9 +126,9 @@ export function AppShell() {
 
           <Link to="/upgrade" className="mt-auto border-y border-[#14274a]/15 py-5 text-left transition hover:bg-[#fffdfa]/45">
             <span className="flex h-9 w-9 items-center justify-center rounded-[2px] bg-[#14274a] text-white"><Crown size={17} aria-hidden /></span>
-            <p className="mt-4 font-editorial-display text-2xl font-semibold tracking-[-0.04em] text-[#14274a]">{premium ? `Examify ${planLabel(plan)}` : "Keep practising"}</p>
-            <p className="mt-1 text-xs leading-5 text-ink-soft">{plan === "pro" ? "Your full study library and unlimited practice access are active." : plan === "plus" ? "Your selected Plus lessons and practice pass are active." : "Unlock more study access and completed exam attempts."}</p>
-            <span className="mt-3 inline-flex text-xs font-extrabold text-[#ce4040]">{premium ? "View plan" : "Explore plans"}</span>
+            <p className="mt-4 font-editorial-display text-2xl font-semibold tracking-[-0.04em] text-[#14274a]">{trial ? "15-day learning trial" : premium ? `Examify ${planLabel(plan)}` : "Keep practising"}</p>
+            <p className="mt-1 text-xs leading-5 text-ink-soft">{trial ? "Your trial access includes the available study and practice workspace." : plan === "pro" ? "Your full study library and unlimited practice access are active." : plan === "plus" ? "Your selected Plus lessons and practice pass are active." : "Unlock more study access and completed exam attempts."}</p>
+            <span className="mt-3 inline-flex text-xs font-extrabold text-[#ce4040]">{trial ? "View trial details" : premium ? "View plan" : "Explore plans"}</span>
           </Link>
         </aside>
 
@@ -139,7 +144,7 @@ export function AppShell() {
             </div>
 
             <div className="relative ml-auto flex items-center gap-2">
-              <Link to="/upgrade" className="hidden items-center gap-1.5 border border-[#14274a]/20 bg-[#fffdfa]/65 px-3 py-2 text-xs font-bold text-ink sm:inline-flex"><Crown size={13} aria-hidden /> {premium ? planLabel(plan) : "Free plan"}</Link>
+              <Link to="/upgrade" className="hidden items-center gap-1.5 border border-[#14274a]/20 bg-[#fffdfa]/65 px-3 py-2 text-xs font-bold text-ink sm:inline-flex"><Crown size={13} aria-hidden /> {trial ? "Trial access" : premium ? planLabel(plan) : "Free plan"}</Link>
               <button type="button" onClick={toggleMenu} className="hidden min-h-10 items-center gap-2 px-1.5 text-ink hover:text-[#ce4040] lg:inline-flex" aria-expanded={menuOpen} aria-controls="account-menu">
                 {avatar ? <img src={avatar} alt="" referrerPolicy="no-referrer" className="h-8 w-8 rounded-full border border-[#14274a]/15 object-cover" /> : <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#14274a] text-xs font-extrabold text-white" aria-hidden>{name.charAt(0).toUpperCase()}</span>}
                 <ChevronDown size={15} className="hidden text-ink-lighter sm:block" aria-hidden />
@@ -150,7 +155,7 @@ export function AppShell() {
               {menuOpen ? (
                 <div id="account-menu" className="absolute right-0 top-[calc(100%+0.65rem)] z-40 hidden w-64 border border-line bg-[#fffdfa] p-2 shadow-[4px_4px_0_#ce4040] lg:block">
                   <div className="border-b border-line px-3 py-3"><p className="truncate text-sm font-extrabold text-ink">{name}</p><p className="mt-0.5 truncate text-xs text-ink-lighter">{user?.email ?? "Signed-in learner"}</p></div>
-                  <Link to="/upgrade" onClick={closeMenu} className="mt-1 flex min-h-10 items-center gap-2 px-3 text-sm font-bold text-ink-soft hover:bg-[#f7f2e9] hover:text-ink"><Crown size={16} aria-hidden />{premium ? `Your ${planLabel(plan)} plan` : "View plans"}</Link>
+                  <Link to="/upgrade" onClick={closeMenu} className="mt-1 flex min-h-10 items-center gap-2 px-3 text-sm font-bold text-ink-soft hover:bg-[#f7f2e9] hover:text-ink"><Crown size={16} aria-hidden />{trial ? "View trial details" : premium ? `Your ${planLabel(plan)} plan` : "View plans"}</Link>
                   <Link to="/settings" onClick={closeMenu} className="flex min-h-10 items-center gap-2 px-3 text-sm font-bold text-ink-soft hover:bg-[#f7f2e9] hover:text-ink"><Settings size={16} aria-hidden />Account settings</Link>
                   {financeAdmin ? <Link to="/admin" onClick={closeMenu} className="flex min-h-10 items-center gap-2 px-3 text-sm font-bold text-ink-soft hover:bg-[#f7f2e9] hover:text-ink"><ShieldCheck size={16} aria-hidden />Finance admin</Link> : null}
                   <button type="button" onClick={() => { closeMenu(); void handleSignOut(); }} className="flex min-h-10 w-full items-center gap-2 px-3 text-left text-sm font-bold text-ink-soft hover:bg-[#f7f2e9] hover:text-ink"><LogOut size={16} aria-hidden />Sign out</button>

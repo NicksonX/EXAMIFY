@@ -113,7 +113,7 @@ function makePdf(material: StudyMaterialRow): Uint8Array {
   draw(`${material.read_minutes ?? ""} minute read${material.word_count ? `  /  ${material.word_count.toLocaleString()} words` : ""}`, left, y, 9, "F1", "0.204 0.314 0.486"); y -= 42;
   commands.push("0.078 0.153 0.29 rg", `${left} ${y - 72} 483 72 re f`);
   draw("Prepared for focused study and A4 printing.", left + 18, y - 28, 13, "F2", "1 1 1");
-  draw("Content access is verified against your active Examify Pro pass.", left + 18, y - 49, 9, "F1", "0.9 0.93 0.97");
+  draw("Content access is verified against your current Examify access.", left + 18, y - 49, 9, "F1", "0.9 0.93 0.97");
   y -= 106;
   if (material.content.intro) { label("Overview"); paragraph(material.content.intro, "intro"); }
   if (material.content.objectives?.length) { heading("Learning objectives"); material.content.objectives.forEach((item) => paragraph(item, "bullet")); }
@@ -164,7 +164,7 @@ function makePdf(material: StudyMaterialRow): Uint8Array {
 }
 
 Deno.serve(async (request) => {
-  let headers: HeadersInit;
+  let headers: HeadersInit = {};
   try {
     headers = corsHeaders(request);
     if (request.method === "OPTIONS") return optionsResponse(request);
@@ -172,16 +172,22 @@ Deno.serve(async (request) => {
     const user = await requireUser(request);
     const materialId = requiredUuid((await parseJsonBody(request)).materialId, "study material");
     const admin = serviceClient();
-    const now = new Date().toISOString();
-    const { data: entitlement, error: entitlementError } = await admin.from("entitlements").select("id").eq("user_id", user.id).eq("plan_slug", "pro").eq("status", "active").lte("starts_at", now).gt("ends_at", now).limit(1).maybeSingle();
+    const { data: entitlement, error: entitlementError } = await admin.rpc("get_entitlement_for_user", {
+      p_user_id: user.id,
+    });
     if (entitlementError) throw entitlementError;
-    if (!entitlement) throw new HttpError(403, "PRO_REQUIRED", "A current Pro pass is required to download study material PDFs.");
+    const canDownload = entitlement && typeof entitlement === "object" && !Array.isArray(entitlement)
+      && (entitlement as Record<string, unknown>).can_download_results === true;
+    if (!canDownload) throw new HttpError(403, "PRO_REQUIRED", "Your current Examify access does not include study-material PDFs.");
     const { data, error } = await admin.from("study_materials").select("id, title, word_count, read_minutes, content, subject:subjects(name)").eq("id", materialId).maybeSingle();
     if (error) throw error;
     const material = data as unknown as StudyMaterialRow | null;
     if (!material?.content) throw new HttpError(404, "STUDY_MATERIAL_NOT_FOUND", "That study material was not found.");
     const filename = material.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 70) || material.id;
-    return new Response(makePdf(material), { headers: { ...headers, "content-type": "application/pdf", "content-disposition": `attachment; filename="examify-${filename}.pdf"`, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+    const pdf = makePdf(material);
+    const pdfBody = new ArrayBuffer(pdf.byteLength);
+    new Uint8Array(pdfBody).set(pdf);
+    return new Response(pdfBody, { headers: { ...headers, "content-type": "application/pdf", "content-disposition": `attachment; filename="examify-${filename}.pdf"`, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
   } catch (error) {
     return errorResponse(error, headers ?? { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   }

@@ -38,6 +38,60 @@ function requiredUsername(value: FormDataEntryValue | null): string {
   return username;
 }
 
+function trustedProviderAvatar(user: {
+  app_metadata?: Record<string, unknown>;
+  user_metadata?: Record<string, unknown>;
+  identities?: Array<{ provider?: string; identity_data?: Record<string, unknown> | null }> | null;
+}): string | null {
+  const provider = typeof user.app_metadata?.provider === "string"
+    ? user.app_metadata.provider
+    : user.identities?.find((identity) => identity.provider)?.provider;
+  if (provider !== "google") return null;
+  const candidates = [
+    user.user_metadata?.avatar_url,
+    user.user_metadata?.picture,
+    ...(user.identities ?? []).flatMap((identity) => [identity.identity_data?.avatar_url, identity.identity_data?.picture]),
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || candidate.length > 2048) continue;
+    try {
+      const url = new URL(candidate);
+      const host = url.hostname.toLowerCase();
+      if (url.protocol === "https:" && (host === "googleusercontent.com" || host.endsWith(".googleusercontent.com") || host === "google.com" || host.endsWith(".google.com"))) {
+        return url.toString();
+      }
+    } catch {
+      // Ignore malformed provider metadata.
+    }
+  }
+  return null;
+}
+
+function safeAccount(value: unknown, avatarUrl: string | null): Record<string, unknown> {
+  const root = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const source = root.account && typeof root.account === "object" && !Array.isArray(root.account)
+    ? root.account as Record<string, unknown>
+    : root;
+  const profile = source.profile && typeof source.profile === "object" && !Array.isArray(source.profile)
+    ? source.profile as Record<string, unknown>
+    : {};
+  return {
+    termsAvailable: source.termsAvailable === true,
+    termsRequired: source.termsRequired === true,
+    profileComplete: source.profileComplete === true,
+    profile: {
+      username: typeof profile.username === "string" ? profile.username : null,
+      displayName: typeof profile.displayName === "string" ? profile.displayName : null,
+      avatarUrl,
+    },
+    terms: source.terms && typeof source.terms === "object" && !Array.isArray(source.terms)
+      ? source.terms
+      : null,
+  };
+}
+
 function savedAvatarObjectKey(account: unknown, userId: string): string | null {
   if (!account || typeof account !== "object" || Array.isArray(account)) return null;
   const profile = (account as Record<string, unknown>).profile;
@@ -65,42 +119,41 @@ Deno.serve(async (request) => {
     }
     const username = requiredUsername(form.get("username"));
     const avatar = form.get("avatar");
-    if (!(avatar instanceof File)) {
-      throw new HttpError(400, "PROFILE_IMAGE_REQUIRED", "Choose a profile picture to continue.");
-    }
-    if (avatar.size < 1 || avatar.size > MAX_AVATAR_BYTES) {
-      throw new HttpError(400, "INVALID_PROFILE_IMAGE", "Choose an image smaller than 2 MB.");
-    }
-    let bytes: Uint8Array;
-    try {
-      bytes = new Uint8Array(await avatar.arrayBuffer());
-    } catch {
-      throw new HttpError(400, "INVALID_PROFILE_IMAGE", "We couldn't read that picture. Choose the image again and retry.");
-    }
-    const image = avatarExtension(bytes);
-    objectKey = `${user.id}/${crypto.randomUUID()}.${image.extension}`;
     const admin = serviceClient();
-    try {
-      const { error: uploadError } = await admin.storage.from("profile-avatars").upload(
-        objectKey,
-        new Blob([blobBytes(bytes)], { type: image.mime }),
-        { contentType: image.mime, upsert: false, cacheControl: "3600" },
-      );
-      if (uploadError) {
-        console.error("Profile avatar upload failed", {
+    if (avatar instanceof File) {
+      if (avatar.size < 1 || avatar.size > MAX_AVATAR_BYTES) {
+        throw new HttpError(400, "INVALID_PROFILE_IMAGE", "Choose an image smaller than 2 MB.");
+      }
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await avatar.arrayBuffer());
+      } catch {
+        throw new HttpError(400, "INVALID_PROFILE_IMAGE", "We couldn't read that picture. Choose the image again and retry.");
+      }
+      const image = avatarExtension(bytes);
+      objectKey = `${user.id}/${crypto.randomUUID()}.${image.extension}`;
+      try {
+        const { error: uploadError } = await admin.storage.from("profile-avatars").upload(
+          objectKey,
+          new Blob([blobBytes(bytes)], { type: image.mime }),
+          { contentType: image.mime, upsert: false, cacheControl: "3600" },
+        );
+        if (uploadError) {
+          console.error("Profile avatar upload failed", {
+            bucket: "profile-avatars",
+            error: uploadError.message,
+            statusCode: uploadError.statusCode,
+          });
+          throw new HttpError(503, "PROFILE_IMAGE_UPLOAD_UNAVAILABLE", "We couldn't save your profile picture. Please try again.");
+        }
+      } catch (error) {
+        if (error instanceof HttpError) throw error;
+        console.error("Profile avatar upload request failed", {
           bucket: "profile-avatars",
-          error: uploadError.message,
-          statusCode: uploadError.statusCode,
+          error: error instanceof Error ? error.message : "unknown error",
         });
         throw new HttpError(503, "PROFILE_IMAGE_UPLOAD_UNAVAILABLE", "We couldn't save your profile picture. Please try again.");
       }
-    } catch (error) {
-      if (error instanceof HttpError) throw error;
-      console.error("Profile avatar upload request failed", {
-        bucket: "profile-avatars",
-        error: error instanceof Error ? error.message : "unknown error",
-      });
-      throw new HttpError(503, "PROFILE_IMAGE_UPLOAD_UNAVAILABLE", "We couldn't save your profile picture. Please try again.");
     }
 
     const { data, error } = await admin.rpc("complete_my_onboarding_profile", {
@@ -129,8 +182,7 @@ Deno.serve(async (request) => {
     }
     profileSaved = true;
     const storedObjectKey = savedAvatarObjectKey(data, user.id);
-    if (!storedObjectKey) throw new Error("Completed profile is missing its private avatar.");
-    if (storedObjectKey !== objectKey) {
+    if (objectKey && storedObjectKey !== objectKey) {
       // The original completion succeeded but its response was lost. This retry
       // uploaded a replacement that is not referenced by the completed profile.
       // Remove only that transient object and sign the authoritative stored image.
@@ -139,15 +191,20 @@ Deno.serve(async (request) => {
         console.error("Completed-profile retry image cleanup failed", { bucket: "profile-avatars" });
       }
     }
-    const { data: signed, error: signedError } = await admin.storage.from("profile-avatars").createSignedUrl(storedObjectKey, 60 * 60);
-    if (signedError || !signed?.signedUrl) {
-      console.error("Profile avatar signing failed", {
-        bucket: "profile-avatars",
-        error: signedError?.message ?? "missing signed URL",
-      });
-      return Response.json({ account: data, avatarUrl: null }, { headers });
+
+    let avatarUrl = trustedProviderAvatar(user);
+    if (storedObjectKey) {
+      const { data: signed, error: signedError } = await admin.storage.from("profile-avatars").createSignedUrl(storedObjectKey, 60 * 60);
+      if (signedError || !signed?.signedUrl) {
+        console.error("Profile avatar signing failed", {
+          bucket: "profile-avatars",
+          error: signedError?.message ?? "missing signed URL",
+        });
+      } else {
+        avatarUrl = signed.signedUrl;
+      }
     }
-    return Response.json({ account: data, avatarUrl: signed.signedUrl }, { headers });
+    return Response.json({ account: safeAccount(data, avatarUrl), avatarUrl }, { headers });
   } catch (error) {
     if (objectKey && !profileSaved) {
       try {

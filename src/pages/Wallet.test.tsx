@@ -6,7 +6,7 @@ import { Wallet } from "./Wallet";
 describe("Wallet", () => {
   it("shows the non-financial coming-soon experience", () => {
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <Wallet />
       </MemoryRouter>,
     );
